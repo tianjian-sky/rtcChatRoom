@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Expires" content="Wed, 14 Feb 1990 00:00:01 GMT">
+    <meta http-equiv="pragma" content="no-cache">
+    <title>webtrc-client2</title>
+</head>
+
+<body>
+    <div id="app">
+        <video id="vid" autoplay></video>
+    </div>
+    <div class="right-tools">
+        <button id="openCam">开启摄像头</button>
+        <button id="closeCam">关闭摄像头</button>
+        <button id="openRtc">開啟rtc</button>
+        <button id="closeRtc">關閉rtc</button>
+    </div>
+</body>
+<script type="module">
+    let videoStream
+    let pc
+    document.querySelector('#openCam').addEventListener('click', function () {
+        navigator.getUserMedia({ video: true, audio: true }, function (stream) {
+            var video = document.querySelector("video");
+
+            //insert stream into the video tag 
+            video.srcObject = videoStream = stream
+        }, function (err) { });
+    })
+    document.querySelector('#closeCam').addEventListener('click', function () {
+        const tracks = videoStream.getTracks()
+        console.log('videoStream', videoStream, tracks)
+        tracks.forEach(trk => {
+            trk.enabled = false
+        })
+        window.mediaStreamTrack && window.mediaStreamTrack.stop()
+    })
+    const connectRemote = offer => {
+        pc.setRemoteDescription(new RTCSessionDescription(offer), function () {
+            pc.createAnswer(function (answer) {
+                pc.setLocalDescription(new RTCSessionDescription(answer), function () {
+                    console.log('createAnswer', answer)
+                    socket.send(JSON.stringify({
+                        type: 'answer',
+                        name: 'client2',
+                        target: 'client1',
+                        answer: answer
+                    }))
+                }, err => {
+                    console.log('setLocalDescription err', err)
+                })
+            }, err => {
+                console.log('createAnswer err', err)
+            })
+        }, err => {
+            console.log('setRemoteDescription err', err)
+        })
+    }
+
+    // Create WebSocket connection.
+    const socket = new WebSocket('ws://localhost:9002');
+    let offer
+    // Connection opened
+    socket.addEventListener('open', function (event) {
+        console.log('ws client connected')
+        socket.send(JSON.stringify({ type: 'wsOpen' }))
+    });
+
+    // Listen for messages
+    socket.addEventListener('message', function (event) {
+        const obj = JSON.parse(event.data)
+        console.log('Message from server ', obj)
+        switch (obj.type) {
+            case 'wsConnected':
+                break
+            case 'offer': {
+                if (obj.name == 'client1' && obj.target == 'client2') {
+                    offer = obj.sdp
+                    connectRemote(offer)
+                }
+                break
+            }
+            default:
+                break
+        }
+    });
+
+    pc = new RTCPeerConnection()
+
+    let inboundStream = null;
+    pc.ontrack = (ev) => {
+        console.log('on track', ev)
+        const vid = document.getElementById("vid");
+        if (ev.streams && ev.streams[0]) {
+            vid.srcObject = ev.streams[0];
+        } else {
+            if (!inboundStream) {
+                // inboundStream = new MediaStream();
+                // vid.srcObject = inboundStream;
+
+                let inboundStream = new MediaStream(ev.track);
+                vid.srcObject = inboundStream;
+            }
+            // inboundStream.addTrack(ev.track);
+        }
+    }
+
+    function endCall() {
+        var videos = document.getElementsByTagName("video");
+        for (var i = 0; i < videos.length; i++) {
+            videos[i].pause();
+        }
+        pc.close();
+    }
+
+</script>
+<style>
+    .right-tools {
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 100px;
+        display: flex;
+        flex-direction: column;
+    }
+</style>
+
+</html>
