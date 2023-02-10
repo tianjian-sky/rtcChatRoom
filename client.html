@@ -25,80 +25,93 @@
 <script type="module">
     let videoStream
     let pc
-    document.querySelector('#openCam').addEventListener('click', function () {
+    let answer
+    let senders = []
+    let camOpen = false
+    const timers = {}
+    const openRtc = () => {
+        pc = new RTCPeerConnection()
+        pc.ontrack = function (obj) {
+            console.log('rtc ontrack', obj)
+        }
+        pc.onaddstream = function (obj) {
+            console.log('rtc onaddstream', obj)
+        }
+        pc.onconnectionstatechange = (event) => {
+            console.log('onconnectionstatechange', pc.connectionState, event)
+            if (pc.connectionState == 'disconnected') {
+                answer = null
+                senders = []
+                clearInterval(timers.offer)
+            }
+        }
+        pc.ondatachannel = (event) => { console.log('ondatachannel', event) }
+        pc.onicecandidate = (event) => { console.log('onicecandidate', event) }
+        pc.oniceconnectionstatechange = (event) => { console.log('oniceconnectionstatechange', event) }
+        pc.onsignalingstatechange = (event) => {
+            console.log('onsignalingstatechange', pc.signalingState, event)
+            // if (openCam && pc.signalingState === 'stable') {
+            //     addTracks()
+            // }
+        }
+        if (openCam) {
+            negotiate(addTracks)
+        }
+    }
+    const closeRtc = () => {
+        pc.close()
+        answer = null
+    }
+    const addTracks = () => {
+        if (camOpen && pc) {
+            navigator.getUserMedia({ video: true, audio: true }, function (stream) {
+                for (const track of stream.getTracks()) {
+                    console.log('addTracks', track, stream)
+                    // senders.push(pc.addTrack(track, stream)) // 1. track和stream同时传
+                    senders.push(pc.addTrack(track)) // 2.只传track
+                }
+            }, function (err) { });
+        }
+    }
+    const openCam = () => {
         navigator.getUserMedia({ video: true, audio: true }, function (stream) {
             var video = document.querySelector("video");
-            //insert stream into the video tag 
             video.srcObject = videoStream = stream
-            for (const track of stream.getTracks()) {
-                pc.addTrack(track);
+            camOpen = true
+            // if (pc && pc.signalingState === 'stable') {
+            //     addTracks()
+            // }
+            if (pc) {
+                negotiate(addTracks)
             }
         }, function (err) { });
-    })
-    document.querySelector('#closeCam').addEventListener('click', function () {
+    }
+    const closeCam = () => {
         const tracks = videoStream.getTracks()
-        console.log('videoStream', videoStream, tracks)
         tracks.forEach(trk => {
             trk.enabled = false
         })
         window.mediaStreamTrack && window.mediaStreamTrack.stop()
-    })
-
-    const connectRemote = answer => {
-        pc.setRemoteDescription(new RTCSessionDescription(answer), function () { }, () => { })
-    }
-
-    // Create WebSocket connection.
-    const ws = new WebSocket('ws://localhost:9001');
-
-    // Connection opened
-    ws.addEventListener('open', function (event) {
-        console.log('ws client connected')
-        ws.send(JSON.stringify({ type: 'wsOpen' }))
-    });
-    let answer
-    // Listen for messages
-    ws.addEventListener('message', function (event) {
-        const obj = JSON.parse(event.data)
-        console.log('Message from server ', obj)
-        switch (obj.type) {
-            case 'wsConnected':
-                break
-            case 'answer': {
-                if (obj.name == 'client2' && obj.target == 'client1') {
-                    debugger
-                    answer = obj.answer
-                    connectRemote(answer)
-                }
-                break
+        if (pc) {
+            for (const sender of senders) {
+                pc.removeTrack(sender)
             }
-            default:
-                break
         }
-    })
-
-    pc = new RTCPeerConnection()
-    pc.onaddstream = function (obj) {
-        console.log('rtc onaddstream', obj)
-        var vid = document.createElement("video");
-        document.appendChild(vid);
-        // vid.srcObject = obj.stream;
+        camOpen = false
     }
-
-    // Helper functions
-    function endCall() {
-        var videos = document.getElementsByTagName("video");
-        for (var i = 0; i < videos.length; i++) {
-            videos[i].pause();
-        }
-        pc.close();
+    const negotiate = (pre) => {
+        answer = null
+        pre && pre()
+        timers.offer = setInterval(() => {
+            if (answer) {
+                clearInterval(timers.offer)
+                return
+            }
+            createOffer()
+        }, 5000)
     }
-
-    // 推送方
-    // Get a list of friends from a server
-    // User selects a friend to start a peer connection with
-    navigator.getUserMedia({ video: true, audio: true }, function (stream) {
-
+    const createOffer = () => {
+        if (!pc) return
         pc.createOffer(function (offer) {
             console.log('offer create success', offer)
             pc.setLocalDescription(new RTCSessionDescription(offer), () => {
@@ -113,12 +126,59 @@
             console.log('offer create failed', err)
         }, {
             iceRestart: false,
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
+            offerToReceiveAudio: false,
+            offerToReceiveVideo: false
         })
-    }, err => {
-        console.log('get user media failed', err)
+    }
+    const connectRemote = answer => {
+        pc.setRemoteDescription(new RTCSessionDescription(answer), function () { }, () => { })
+    }
+
+    // Create WebSocket connection.
+    const ws = new WebSocket('ws://localhost:9001');
+
+    // Connection opened
+    ws.addEventListener('open', function (event) {
+        console.log('ws client connected')
+        ws.send(JSON.stringify({ type: 'wsOpen' }))
+    });
+    // Listen for messages
+    ws.addEventListener('message', function (event) {
+        const obj = JSON.parse(event.data)
+        console.log('Message from server ', obj)
+        switch (obj.type) {
+            case 'wsConnected':
+                break
+            case 'answer': {
+                console.log('pc.signalingState', pc.signalingState)
+                if (obj.name == 'client2' && obj.target == 'client1') {
+                    answer = obj.answer
+                    connectRemote(answer)
+                }
+                break
+            }
+            case 'reconnect': {
+                answer = null
+                createOffer()
+                break
+            }
+            default:
+                break
+        }
     })
+
+    // Helper functions
+    function endCall() {
+        var videos = document.getElementsByTagName("video");
+        for (var i = 0; i < videos.length; i++) {
+            videos[i].pause();
+        }
+        pc.close();
+    }
+    document.querySelector('#openCam').addEventListener('click', openCam)
+    document.querySelector('#closeCam').addEventListener('click', closeCam)
+    document.querySelector('#openRtc').addEventListener('click', openRtc)
+    document.querySelector('#closeRtc').addEventListener('click', closeRtc)
 </script>
 <style>
     .right-tools {

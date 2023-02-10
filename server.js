@@ -77,6 +77,8 @@ wss2.on('connection', function connection(ws) {
                 break
             case 'answer':
                 conn.send(msg)
+            case 'reconnect':
+                conn.send(msg)
             default:
                 break
         }

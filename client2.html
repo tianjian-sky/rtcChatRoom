@@ -13,7 +13,8 @@
 
 <body>
     <div id="app">
-        <video id="vid" autoplay></video>
+        <div id="self"></div>
+        <div id="other"></div>
     </div>
     <div class="right-tools">
         <button id="openCam">开启摄像头</button>
@@ -25,23 +26,103 @@
 <script type="module">
     let videoStream
     let pc
-    document.querySelector('#openCam').addEventListener('click', function () {
+    let offer
+    let senders = []
+    let inboundStream
+    let camOpen = false
+    const timers = {}
+    const openRtc = () => {
+        if (pc) {
+            socket.send(JSON.stringify({ type: 'reconnect', name: 'client2', to: 'client1' }))
+            pc = null
+        }
+        pc = new RTCPeerConnection()
+        pc.ontrack = (ev) => {
+            console.log('on track', ev)
+            const vid = document.createElement('video')
+            document.getElementById('other').innerHTML = ''
+            document.getElementById('other').appendChild(vid)
+            // if (ev.streams && ev.streams[0]) {
+            //     vid.srcObject = ev.streams[0];
+            // }
+            if (ev.track && ev.track.kind === 'video') {
+                if (!inboundStream) {
+                    inboundStream = new MediaStream([ev.track]);
+                    vid.srcObject = inboundStream
+                    vid.setAttribute('autoplay', true)
+                    vid.setAttribute('controls', true)
+                    // vid.play()
+                }
+            }
+        }
+        // else {
+        //     if (!inboundStream) {
+        //         inboundStream = new MediaStream([ev.track]);
+        //         vid.srcObject = inboundStream
+        //         // vid.play()
+        //     }
+        //     inboundStream.addTrack(ev.track)
+        // }
+        // }
+        pc.onconnectionstatechange = (event) => {
+            console.log('onconnectionstatechange', pc.connectionState, event)
+            if (pc.connectionState == 'disconnected') {
+                inboundStream = null
+                offer = null
+                senders = []
+            }
+        }
+        pc.ondatachannel = (event) => { console.log('ondatachannel', event) }
+        pc.onicecandidate = (event) => { console.log('onicecandidate', event) }
+        pc.oniceconnectionstatechange = (event) => {
+            console.log('oniceconnectionstatechange', event)
+        }
+        pc.onsignalingstatechange = (event) => { console.log('onsignalingstatechange', pc.signalingState, event) }
+        if (camOpen) {
+            navigator.getUserMedia({ video: true, audio: true }, function (stream) {
+                for (const track of stream.getTracks()) {
+                    senders.push(pc.addTrack(track))
+                }
+            }, function (err) { });
+        }
+    }
+    const closeRtc = () => {
+        pc.close()
+        inboundStream = null
+        offer = null
+        senders = []
+    }
+    const openCam = () => {
         navigator.getUserMedia({ video: true, audio: true }, function (stream) {
             var video = document.querySelector("video");
-
-            //insert stream into the video tag 
+            console.log('tracks', stream.getTracks())
             video.srcObject = videoStream = stream
+            camOpen = true
+            if (pc) {
+                for (const track of stream.getTracks()) {
+                    senders.push(pc.addTrack(track))
+                }
+            }
         }, function (err) { });
-    })
-    document.querySelector('#closeCam').addEventListener('click', function () {
+    }
+    const closeCam = () => {
         const tracks = videoStream.getTracks()
-        console.log('videoStream', videoStream, tracks)
         tracks.forEach(trk => {
             trk.enabled = false
         })
         window.mediaStreamTrack && window.mediaStreamTrack.stop()
-    })
+        camOpen = false
+        if (pc) {
+            for (const sender of senders) {
+                pc.removeTrack(sender)
+            }
+        }
+    }
+
+    document.querySelector('#openCam').addEventListener('click', openCam)
+    document.querySelector('#closeCam').addEventListener('click', closeCam)
     const connectRemote = offer => {
+        if (!pc) return
         pc.setRemoteDescription(new RTCSessionDescription(offer), function () {
             pc.createAnswer(function (answer) {
                 pc.setLocalDescription(new RTCSessionDescription(answer), function () {
@@ -65,7 +146,6 @@
 
     // Create WebSocket connection.
     const socket = new WebSocket('ws://localhost:9002');
-    let offer
     // Connection opened
     socket.addEventListener('open', function (event) {
         console.log('ws client connected')
@@ -82,6 +162,7 @@
             case 'offer': {
                 if (obj.name == 'client1' && obj.target == 'client2') {
                     offer = obj.sdp
+                    inboundStream = null
                     connectRemote(offer)
                 }
                 break
@@ -90,34 +171,10 @@
                 break
         }
     });
-
-    pc = new RTCPeerConnection()
-
-    let inboundStream = null;
-    pc.ontrack = (ev) => {
-        console.log('on track', ev)
-        const vid = document.getElementById("vid");
-        if (ev.streams && ev.streams[0]) {
-            vid.srcObject = ev.streams[0];
-        } else {
-            if (!inboundStream) {
-                // inboundStream = new MediaStream();
-                // vid.srcObject = inboundStream;
-
-                let inboundStream = new MediaStream(ev.track);
-                vid.srcObject = inboundStream;
-            }
-            // inboundStream.addTrack(ev.track);
-        }
-    }
-
-    function endCall() {
-        var videos = document.getElementsByTagName("video");
-        for (var i = 0; i < videos.length; i++) {
-            videos[i].pause();
-        }
-        pc.close();
-    }
+    document.querySelector('#openCam').addEventListener('click', openCam)
+    document.querySelector('#closeCam').addEventListener('click', closeCam)
+    document.querySelector('#openRtc').addEventListener('click', openRtc)
+    document.querySelector('#closeRtc').addEventListener('click', closeRtc)
 
 </script>
 <style>
@@ -128,6 +185,10 @@
         width: 100px;
         display: flex;
         flex-direction: column;
+    }
+
+    #app {
+        display: flex;
     }
 </style>
 
