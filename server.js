@@ -60,6 +60,10 @@ wss.on('connection', function connection(ws) {
                 break
             case 'offer':
                 conn2.send(msg)
+                break
+            case 'candidate':
+                conn2.send(msg)
+                break
             default:
                 break
         }
@@ -77,8 +81,13 @@ wss2.on('connection', function connection(ws) {
                 break
             case 'answer':
                 conn.send(msg)
+                break
+            case 'candidate':
+                conn.send(msg)
+                break
             case 'reconnect':
                 conn.send(msg)
+                break
             default:
                 break
         }

@@ -13,7 +13,14 @@
 
 <body>
     <div id="app">
-        <video autoplay></video>
+        <div class="self">
+            <p>自己</p>
+            <video id="self" autoplay controls></video>
+        </div>
+        <div class="other">
+            <p>對方</p>
+            <video id="other" autoplay controls></video>
+        </div>
     </div>
     <div class="right-tools">
         <button id="openCam">开启摄像头</button>
@@ -27,12 +34,25 @@
     let pc
     let answer
     let senders = []
+    let inboundStream
     let camOpen = false
     const timers = {}
     const openRtc = () => {
         pc = new RTCPeerConnection()
         pc.ontrack = function (obj) {
             console.log('rtc ontrack', obj)
+            const vid = document.getElementById('other')
+            // if (ev.streams && ev.streams[0]) {
+            //     vid.srcObject = ev.streams[0];
+            // }
+            if (ev.track && ev.track.kind === 'video') {
+                if (!inboundStream) {
+                    inboundStream = new MediaStream([ev.track]);
+                    vid.srcObject = inboundStream
+                    // vid.setAttribute('controls', true)
+                    // vid.play()
+                }
+            }
         }
         pc.onaddstream = function (obj) {
             console.log('rtc onaddstream', obj)
@@ -46,7 +66,6 @@
             }
         }
         pc.ondatachannel = (event) => { console.log('ondatachannel', event) }
-        pc.onicecandidate = (event) => { console.log('onicecandidate', event) }
         pc.oniceconnectionstatechange = (event) => { console.log('oniceconnectionstatechange', event) }
         pc.onsignalingstatechange = (event) => {
             console.log('onsignalingstatechange', pc.signalingState, event)
@@ -54,8 +73,32 @@
             //     addTracks()
             // }
         }
+        pc.onnegotiationneeded = (event) => { // 
+            console.log('onnegotiationneeded', event)
+            negotiate(() => { })
+        }
+        pc.onicecandidate = (event) => {
+            console.log(`%c onicecandidate$:${new Date().getTime()}  ${JSON.stringify(event.candidate)}`, 'color:purple;')
+            if (event.candidate) {
+                ws.send(JSON.stringify({ type: 'candidate', from: 'client1', to: 'client2', candidate: event.candidate }))
+            }
+        }
+        pc.onicegatheringstatechange = (ev) => {
+            console.log(`%c ice gathering state${pc.iceGatheringState}`, 'color:green;')
+            switch (pc.iceGatheringState) {
+                case "new":
+                    /* gathering is either just starting or has been reset */
+                    break;
+                case "gathering":
+                    /* gathering has begun or is ongoing */
+                    break;
+                case "complete":
+                    /* gathering has ended */
+                    break;
+            }
+        }
         if (openCam) {
-            negotiate(addTracks)
+            addTracks()
         }
     }
     const closeRtc = () => {
@@ -75,15 +118,13 @@
     }
     const openCam = () => {
         navigator.getUserMedia({ video: true, audio: true }, function (stream) {
-            var video = document.querySelector("video");
+            var video = document.querySelector("#self");
             video.srcObject = videoStream = stream
             camOpen = true
             // if (pc && pc.signalingState === 'stable') {
             //     addTracks()
             // }
-            if (pc) {
-                negotiate(addTracks)
-            }
+            addTracks()
         }, function (err) { });
     }
     const closeCam = () => {
@@ -133,7 +174,11 @@
     const connectRemote = answer => {
         pc.setRemoteDescription(new RTCSessionDescription(answer), function () { }, () => { })
     }
-
+    const addCandidate = candidate => {
+        pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => {
+            console.error('add candidate err', e)
+        })
+    }
     // Create WebSocket connection.
     const ws = new WebSocket('ws://localhost:9001');
 
@@ -160,6 +205,10 @@
             case 'reconnect': {
                 answer = null
                 createOffer()
+                break
+            }
+            case 'candidate': {
+                addCandidate(obj.candidate)
                 break
             }
             default:
