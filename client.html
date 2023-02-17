@@ -21,6 +21,13 @@
             <p>對方</p>
             <video id="other" autoplay controls></video>
         </div>
+        <div class="msglist">
+            <p>消息列表：</p>
+        </div>
+    </div>
+    <div>
+
+        <textarea id="msg"></textarea><button id="send">发送</button>
     </div>
     <div class="right-tools">
         <button id="openCam">开启摄像头</button>
@@ -32,33 +39,48 @@
 <script type="module">
     let videoStream
     let pc
+    let dc
     let answer
     let senders = []
     let inboundStream
     let camOpen = false
     const timers = {}
     const openRtc = () => {
-        pc = new RTCPeerConnection()
-        pc.ontrack = function (obj) {
-            console.log('rtc ontrack', obj)
+        pc = new RTCPeerConnection({})
+        dc = pc.createDataChannel("my channel")
+        dc.onmessage = (event) => {
+            console.log(`datachannel received: ${event.data}`)
+            const dom = document.querySelector('.msglist')
+            dom.innerHTML = dom.innerHTML + `
+                <div class="msg receive">
+                    <p>${event.data}</p>
+                    <p><span>client2:</span><span>${new Date()}</span></p>
+                </div>
+            `
+        }
+        dc.onopen = () => {
+            console.log("datachannel open")
+        }
+        dc.onclose = () => {
+            console.log("datachannel close")
+            // dc = null
+        }
+        pc.ontrack = function (ev) {
+            console.warn('rtc ontrack', ev)
             const vid = document.getElementById('other')
-            // if (ev.streams && ev.streams[0]) {
-            //     vid.srcObject = ev.streams[0];
-            // }
             if (ev.track && ev.track.kind === 'video') {
-                if (!inboundStream) {
-                    inboundStream = new MediaStream([ev.track]);
-                    vid.srcObject = inboundStream
-                    // vid.setAttribute('controls', true)
-                    // vid.play()
-                }
+                inboundStream = new MediaStream([ev.track]);
+                vid.srcObject = inboundStream
+                // vid.setAttribute('controls', true)
+                // vid.play()
+                // inboundStream.addTrack(ev.track)
             }
         }
         pc.onaddstream = function (obj) {
             console.log('rtc onaddstream', obj)
         }
         pc.onconnectionstatechange = (event) => {
-            console.log('onconnectionstatechange', pc.connectionState, event)
+            console.log('onconnectionstatechange', pc.connectionState, event, pc.getTransceivers())
             if (pc.connectionState == 'disconnected') {
                 answer = null
                 senders = []
@@ -97,19 +119,28 @@
                     break;
             }
         }
-        if (openCam) {
+        if (camOpen) {
             addTracks()
         }
     }
     const closeRtc = () => {
         pc.close()
         answer = null
+        senders = []
+        inboundStream = null
+        dc = null
     }
     const addTracks = () => {
         if (camOpen && pc) {
             navigator.getUserMedia({ video: true, audio: true }, function (stream) {
                 for (const track of stream.getTracks()) {
                     console.log('addTracks', track, stream)
+                    // if (senders[track.id]) {
+                    //     senders[track.id].replaceTrack(track)
+                    // } else {
+                    // senders[track.id] = pc.addTrack(track)
+                    // }
+                    // console.log('addTracks', track, stream)
                     // senders.push(pc.addTrack(track, stream)) // 1. track和stream同时传
                     senders.push(pc.addTrack(track)) // 2.只传track
                 }
@@ -121,10 +152,14 @@
             var video = document.querySelector("#self");
             video.srcObject = videoStream = stream
             camOpen = true
+            addTracks()
             // if (pc && pc.signalingState === 'stable') {
             //     addTracks()
             // }
-            addTracks()
+            // window.mediaStreamTrack && window.mediaStreamTrack.stop()
+            // senders.forEach(sender => {
+            //     sender
+            // })
         }, function (err) { });
     }
     const closeCam = () => {
@@ -138,6 +173,7 @@
                 pc.removeTrack(sender)
             }
         }
+        senders = []
         camOpen = false
     }
     const negotiate = (pre) => {
@@ -167,8 +203,8 @@
             console.log('offer create failed', err)
         }, {
             iceRestart: false,
-            offerToReceiveAudio: false,
-            offerToReceiveVideo: false
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
         })
     }
     const connectRemote = answer => {
@@ -178,6 +214,19 @@
         pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => {
             console.error('add candidate err', e)
         })
+    }
+    const sendMsg = function () {
+        const msg = document.getElementById('msg').value
+        if (msg && msg.trim() && dc) {
+            dc.send(msg)
+            const dom = document.querySelector('.msglist')
+            dom.innerHTML = dom.innerHTML + `
+                <div class="msg send">
+                    <p>${msg}</p>
+                    <p><span>自己:</span><span>${new Date()}</span></p>
+                </div>
+            `
+        }
     }
     // Create WebSocket connection.
     const ws = new WebSocket('ws://localhost:9001');
@@ -211,6 +260,10 @@
                 addCandidate(obj.candidate)
                 break
             }
+            case 'negotiationneeded': {
+                negotiate(() => { })
+                break
+            }
             default:
                 break
         }
@@ -228,6 +281,7 @@
     document.querySelector('#closeCam').addEventListener('click', closeCam)
     document.querySelector('#openRtc').addEventListener('click', openRtc)
     document.querySelector('#closeRtc').addEventListener('click', closeRtc)
+    document.querySelector('#send').addEventListener('click', sendMsg)
 </script>
 <style>
     .right-tools {
@@ -237,6 +291,30 @@
         width: 100px;
         display: flex;
         flex-direction: column;
+    }
+
+    video {
+        display: block;
+        width: 300px;
+    }
+
+    #app {
+        display: flex;
+        height: 70vh;
+    }
+
+    #app>* {
+        flex: 1;
+    }
+
+    .msglist {}
+
+    .msg.send {
+        text-align: right;
+    }
+
+    .msg.receive {
+        text-align: left;
     }
 </style>
 
