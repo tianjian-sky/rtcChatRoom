@@ -47,22 +47,35 @@ const wss2 = new WebSocketServer({
 })
 
 let conn, conn2
+let politeOffer = false
 
 wss.on('connection', function connection(ws) {
     conn = ws
     conn.on('message', function message(data) {
         const msg = data.toString()
         const obj = JSON.parse(data.toString())
-        console.log('server received from client', obj)
         switch (obj.type) {
             case 'wsOpen':
                 conn.send(JSON.stringify({ type: 'wsConnected' }));
+                politeOffer = false
                 break
             case 'offer':
+                if (!politeOffer) politeOffer = 'client2'
+                conn2.send(JSON.stringify(Object.assign(obj, {
+                    areYouPolite: politeOffer === 'client2'
+                })))
+                break
+            case 'answer':
                 conn2.send(msg)
                 break
             case 'candidate':
                 conn2.send(msg)
+                break
+            case 'negotiationneeded':
+            case 'restartIce':
+            case 'disconnect':
+                politeOffer = false
+                break
                 break
             default:
                 break
@@ -74,10 +87,17 @@ wss2.on('connection', function connection(ws) {
     conn2.on('message', function message(data) {
         const msg = data.toString()
         const obj = JSON.parse(data.toString())
-        console.log('server received from client2', obj)
         switch (obj.type) {
             case 'wsOpen':
                 conn2.send(JSON.stringify({ type: 'wsConnected' }));
+                politeOffer = false
+                break
+            case 'offer':
+                if (!politeOffer) politeOffer = 'client1'
+                conn.send(JSON.stringify(Object.assign(obj, {
+                    areYouPolite: politeOffer === 'client1'
+                })))
+                politeOffer = true
                 break
             case 'answer':
                 conn.send(msg)
@@ -89,7 +109,9 @@ wss2.on('connection', function connection(ws) {
                 conn.send(msg)
                 break
             case 'negotiationneeded':
-                conn.send(msg)
+            case 'restartIce':
+            case 'disconnect':
+                politeOffer = false
                 break
             default:
                 break

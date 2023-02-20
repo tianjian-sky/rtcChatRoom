@@ -34,6 +34,7 @@
         <button id="closeCam">关闭摄像头</button>
         <button id="openRtc">開啟rtc</button>
         <button id="closeRtc">關閉rtc</button>
+        <button id="iceRestart">ice Restart</button>
     </div>
 </body>
 <script type="module">
@@ -41,9 +42,11 @@
     let pc
     let dc
     let answer
+    let offer
     let senders = []
     let inboundStream
     let camOpen = false
+    let negotiatePending = false
     const timers = {}
     const openRtc = () => {
         pc = new RTCPeerConnection({})
@@ -69,8 +72,11 @@
             console.warn('rtc ontrack', ev)
             const vid = document.getElementById('other')
             if (ev.track && ev.track.kind === 'video') {
-                inboundStream = new MediaStream([ev.track]);
-                vid.srcObject = inboundStream
+                ev.track.onunmute = e => {
+                    console.log('unmute track', e)
+                    inboundStream = new MediaStream([ev.track]);
+                    vid.srcObject = inboundStream
+                }
                 // vid.setAttribute('controls', true)
                 // vid.play()
                 // inboundStream.addTrack(ev.track)
@@ -80,24 +86,24 @@
             console.log('rtc onaddstream', obj)
         }
         pc.onconnectionstatechange = (event) => {
-            console.log('onconnectionstatechange', pc.connectionState, event, pc.getTransceivers())
-            if (pc.connectionState == 'disconnected') {
-                answer = null
-                senders = []
-                clearInterval(timers.offer)
+            console.log('connectionstatechange', pc.connectionState)
+            if (pc.connectionState == 'failed') { // 对方断开
+                ws.send(JSON.stringify({ type: 'disconnect', target: 'client2' }))
             }
         }
-        pc.ondatachannel = (event) => { console.log('ondatachannel', event) }
-        pc.oniceconnectionstatechange = (event) => { console.log('oniceconnectionstatechange', event) }
+        pc.oniceconnectionstatechange = (event) => { console.log('ice connectionstatechange', pc.iceConnectionState) }
         pc.onsignalingstatechange = (event) => {
-            console.log('onsignalingstatechange', pc.signalingState, event)
-            // if (openCam && pc.signalingState === 'stable') {
-            //     addTracks()
-            // }
+            console.log('signalingstatechange', pc.signalingState)
         }
+
+        pc.ondatachannel = (event) => { console.log('ondatachannel', event) }
         pc.onnegotiationneeded = (event) => { // 
             console.log('onnegotiationneeded', event)
-            negotiate(() => { })
+            if (negotiatePending) return
+            ws.send(JSON.stringify({ type: 'negotiationneeded' }))
+            if (camOpen) {
+                negotiate(() => { })
+            }
         }
         pc.onicecandidate = (event) => {
             console.log(`%c onicecandidate$:${new Date().getTime()}  ${JSON.stringify(event.candidate)}`, 'color:purple;')
@@ -130,7 +136,7 @@
         inboundStream = null
         dc = null
     }
-    const addTracks = () => {
+    const addTracks = (cb) => {
         if (camOpen && pc) {
             navigator.getUserMedia({ video: true, audio: true }, function (stream) {
                 for (const track of stream.getTracks()) {
@@ -144,6 +150,7 @@
                     // senders.push(pc.addTrack(track, stream)) // 1. track和stream同时传
                     senders.push(pc.addTrack(track)) // 2.只传track
                 }
+                cb && cb()
             }, function (err) { });
         }
     }
@@ -153,13 +160,10 @@
             video.srcObject = videoStream = stream
             camOpen = true
             addTracks()
-            // if (pc && pc.signalingState === 'stable') {
-            //     addTracks()
-            // }
-            // window.mediaStreamTrack && window.mediaStreamTrack.stop()
-            // senders.forEach(sender => {
-            //     sender
-            // })
+            if (negotiatePending) {
+                negotiatePending = false
+                negotiate(() => { })
+            }
         }, function (err) { });
     }
     const closeCam = () => {
@@ -172,10 +176,16 @@
             for (const sender of senders) {
                 pc.removeTrack(sender)
             }
+            negotiatePending = true
         }
         senders = []
         camOpen = false
     }
+    // - The perfect negotiation logic, separated from the rest of the application ---
+    // keep track of some negotiation state to prevent races and errors
+    let makingOffer = false;
+    let ignoreOffer = false;
+    let isSettingRemoteAnswerPending = false;
     const negotiate = (pre) => {
         answer = null
         pre && pre()
@@ -189,6 +199,7 @@
     }
     const createOffer = () => {
         if (!pc) return
+        makingOffer = true;
         pc.createOffer(function (offer) {
             console.log('offer create success', offer)
             pc.setLocalDescription(new RTCSessionDescription(offer), () => {
@@ -198,22 +209,63 @@
                     target: 'client2',
                     sdp: pc.localDescription
                 }))
+                makingOffer = false
             });
         }, function (err) {
             console.log('offer create failed', err)
+            makingOffer = false
         }, {
             iceRestart: false,
             offerToReceiveAudio: true,
             offerToReceiveVideo: true
         })
     }
-    const connectRemote = answer => {
-        pc.setRemoteDescription(new RTCSessionDescription(answer), function () { }, () => { })
+    const connectRemote = (type, desc, addition = {}) => {
+        if (!pc) return
+        if (type === 'answer') {
+            isSettingRemoteAnswerPending = true
+            pc.setRemoteDescription(new RTCSessionDescription(desc), function () {
+                isSettingRemoteAnswerPending = false
+            }, () => { })
+        } else if (type === 'offer') {
+            const areYouPolite = addition.areYouPolite
+            const readyForOffer = !makingOffer && (pc.signalingState == "stable" || isSettingRemoteAnswerPending);
+            ignoreOffer = !areYouPolite && (makingOffer || pc.signalingState != "stable" && !isSettingRemoteAnswerPending);
+            // 禮貌方每次拿到offer都接受，即使自己之前已經建了offer，這會觸發ice rollback
+            if (ignoreOffer) {
+                return;
+            }
+            pc.setRemoteDescription(new RTCSessionDescription(desc), function () {
+                addTracks(() => {
+                    pc.createAnswer(function (answer) {
+                        pc.setLocalDescription(answer, function () {
+                            console.log('createAnswer', answer)
+                            ws.send(JSON.stringify({
+                                type: 'answer',
+                                name: 'client1',
+                                target: 'client2',
+                                answer: answer
+                            }))
+                        }, err => {
+                            console.log('setLocalDescription err', err)
+                        })
+                    }, err => {
+                        console.log('createAnswer err', err)
+                    })
+                })
+            }, err => {
+                console.log('setRemoteDescription err', err)
+            })
+        }
     }
     const addCandidate = candidate => {
         pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => {
             console.error('add candidate err', e)
         })
+    }
+    const restartIce = () => {
+        ws.send(JSON.stringify({ type: 'restartIce', target: 'client1' }))
+        pc.restartIce()
     }
     const sendMsg = function () {
         const msg = document.getElementById('msg').value
@@ -243,11 +295,20 @@
         switch (obj.type) {
             case 'wsConnected':
                 break
-            case 'answer': {
-                console.log('pc.signalingState', pc.signalingState)
+            case 'offer': {
                 if (obj.name == 'client2' && obj.target == 'client1') {
+                    clearInterval(timers.offer)
+                    offer = obj.sdp
+                    inboundStream = null
+                    connectRemote('offer', offer, { areYouPolite: obj.areYouPolite })
+                }
+                break
+            }
+            case 'answer': {
+                if (obj.name == 'client2' && obj.target == 'client1') {
+                    clearInterval(timers.offer)
                     answer = obj.answer
-                    connectRemote(answer)
+                    connectRemote('answer', answer)
                 }
                 break
             }
@@ -258,10 +319,6 @@
             }
             case 'candidate': {
                 addCandidate(obj.candidate)
-                break
-            }
-            case 'negotiationneeded': {
-                negotiate(() => { })
                 break
             }
             default:
@@ -282,6 +339,7 @@
     document.querySelector('#openRtc').addEventListener('click', openRtc)
     document.querySelector('#closeRtc').addEventListener('click', closeRtc)
     document.querySelector('#send').addEventListener('click', sendMsg)
+    document.querySelector('#iceRestart').addEventListener('click', restartIce)
 </script>
 <style>
     .right-tools {
